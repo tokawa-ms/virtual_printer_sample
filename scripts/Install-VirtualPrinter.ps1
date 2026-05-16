@@ -25,7 +25,7 @@ param(
     [string]$InstallDir  = 'C:\Program Files\VirtualPrintDemo',
     [string]$PrinterName = 'Virtual Print Demo',
     [string]$PortName    = '',
-    [string]$DriverName  = 'Microsoft XPS Class Driver',
+    [string]$DriverName  = 'Microsoft Print To PDF',
     [string]$OutputRoot  = 'C:\VirtualPrintDemo'
 )
 
@@ -42,7 +42,7 @@ function Assert-Admin {
 Assert-Admin
 
 $spoolDir  = Join-Path $OutputRoot '.spool'
-$spoolFile = Join-Path $spoolDir   'spool.xps'
+$spoolFile = Join-Path $spoolDir   'spool.pdf'
 if (-not $PortName) { $PortName = $spoolFile }
 
 Write-Host "==> Ensuring output / spool directories exist"
@@ -87,10 +87,11 @@ switch -Regex ($arch) {
 Write-Host "==> Target runtime: $rid"
 $publishDir = Join-Path $root "src\VirtualPrinter.App\bin\Release\net8.0-windows\$rid\publish"
 
+Write-Host "==> dotnet publish ($rid)"
+& dotnet publish $projectFile -c Release -r $rid --no-self-contained --nologo | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed." }
 if (-not (Test-Path (Join-Path $publishDir 'VirtualPrinter.App.exe'))) {
-    Write-Host "==> dotnet publish ($rid)"
-    & dotnet publish $projectFile -c Release -r $rid --no-self-contained | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed." }
+    throw "Publish output missing: $publishDir\VirtualPrinter.App.exe"
 }
 
 # ----------------------------------------------------------------
@@ -125,11 +126,25 @@ Start-Process -FilePath $exe -ArgumentList '--watch' -WindowStyle Hidden
 # 5) Printer port + driver + queue
 # ----------------------------------------------------------------
 Write-Host "==> Creating local file port '$PortName'"
-# Remove a stale port with the same path first.
-Remove-PrinterPort -Name $PortName -ErrorAction SilentlyContinue
-# Add-PrinterPort without -PrinterHostAddress creates a local port; the Name
-# IS the path the spooler writes to.
-Add-PrinterPort -Name $PortName
+# If the printer already exists but is bound to a different port (e.g. the
+# legacy spool.xps port from an older install), remove it first so we can
+# rebind cleanly to the new PDF port without conflicts.
+$existing = Get-Printer -Name $PrinterName -ErrorAction SilentlyContinue
+if ($existing -and ($existing.PortName -ne $PortName -or $existing.DriverName -ne $DriverName)) {
+    Write-Host "    -> Removing existing printer (port/driver mismatch: $($existing.PortName) / $($existing.DriverName))"
+    Remove-Printer -Name $PrinterName -ErrorAction SilentlyContinue
+}
+# Drop the legacy XPS spool port if nothing is bound to it any more.
+$legacyXpsPort = Join-Path $spoolDir 'spool.xps'
+if ($PortName -ne $legacyXpsPort -and (Get-PrinterPort -Name $legacyXpsPort -ErrorAction SilentlyContinue)) {
+    if (-not (Get-Printer | Where-Object { $_.PortName -eq $legacyXpsPort })) {
+        Write-Host "    -> Removing obsolete port '$legacyXpsPort'"
+        Remove-PrinterPort -Name $legacyXpsPort -ErrorAction SilentlyContinue
+    }
+}
+if (-not (Get-PrinterPort -Name $PortName -ErrorAction SilentlyContinue)) {
+    Add-PrinterPort -Name $PortName
+}
 
 Write-Host "==> Ensuring driver '$DriverName' is installed"
 if (-not (Get-PrinterDriver -Name $DriverName -ErrorAction SilentlyContinue)) {
@@ -143,10 +158,64 @@ if (Get-Printer -Name $PrinterName -ErrorAction SilentlyContinue) {
     Add-Printer -Name $PrinterName -DriverName $DriverName -PortName $PortName
 }
 
+# Force color mode on the printer's default PrintTicket. Microsoft Print To
+# PDF advertises PageOutputColor and respects this default, so silent prints
+# (and clients like Chrome that mirror the driver capabilities) will produce
+# color output.
+Write-Host "==> Setting default color mode = Color"
+try {
+    Set-PrintConfiguration -PrinterName $PrinterName -Color $true
+} catch {
+    Write-Warning "Set-PrintConfiguration -Color failed: $($_.Exception.Message)"
+}
+
+# Echo what actually stuck so we can see whether the driver honors the setting.
+try {
+    $cfg = Get-PrintConfiguration -PrinterName $PrinterName
+    Write-Host ("    -> Effective config: Color={0}, DuplexingMode={1}, PaperSize={2}" -f `
+        $cfg.Color, $cfg.DuplexingMode, $cfg.PaperSize)
+} catch {
+    Write-Warning "Get-PrintConfiguration failed: $($_.Exception.Message)"
+}
+
+# Dump the printer's PrintCapabilities XML to see whether the driver actually
+# advertises a PageOutputColor feature. If it does not, Chrome / Edge will
+# pre-rasterize to grayscale before spooling, regardless of any DEVMODE
+# default we set above.
+Write-Host "==> Inspecting PrintCapabilities"
+try {
+    Add-Type -AssemblyName System.Printing -ErrorAction Stop
+    $server = New-Object System.Printing.LocalPrintServer
+    $queue  = $server.GetPrintQueue($PrinterName)
+    $capsStream = $queue.GetPrintCapabilitiesAsXml()
+    $reader = New-Object System.IO.StreamReader($capsStream)
+    $capsXml = $reader.ReadToEnd()
+    $reader.Dispose()
+    $capsStream.Dispose()
+
+    $capsPath = Join-Path $OutputRoot 'printer-capabilities.xml'
+    [System.IO.File]::WriteAllText($capsPath, $capsXml, [System.Text.Encoding]::UTF8)
+
+    $hasFeature = $capsXml -match 'PageOutputColor'
+    $hasColorOption = $capsXml -match 'psk:Color'
+    Write-Host ("    -> PageOutputColor feature in capabilities : {0}" -f $hasFeature)
+    Write-Host ("    -> psk:Color option in capabilities        : {0}" -f $hasColorOption)
+    Write-Host ("    -> Full PrintCapabilities saved to         : {0}" -f $capsPath)
+} catch {
+    Write-Warning "PrintCapabilities inspection failed: $($_.Exception.Message)"
+}
+
+# ----------------------------------------------------------------
+# 6) (Start Menu shortcut is intentionally NOT created — the watcher
+#     runs headless. Launch the EXE directly to view the log / output.)
+# ----------------------------------------------------------------
+
 Write-Host ''
 Write-Host "Done."
-Write-Host "  Printer  : $PrinterName"
-Write-Host "  Port     : $PortName"
-Write-Host "  Watcher  : $exe --watch  (auto-starts via Run key)"
-Write-Host "  Output   : $OutputRoot\<timestamp>_<jobname>\page_NNN.png"
-Write-Host "  Log file : $OutputRoot\virtual-printer.log"
+Write-Host "  Printer   : $PrinterName"
+Write-Host "  Port      : $PortName"
+Write-Host "  Watcher   : $exe --watch  (auto-starts via Run key)"
+Write-Host "  UI window : run '$exe' for the log/output viewer"
+Write-Host "  Output    : $OutputRoot\<timestamp>_<jobname>\page_NNN.png (color)"
+Write-Host "             (the source PDF is preserved as print.pdf in the same folder)"
+Write-Host "  Log file  : $OutputRoot\virtual-printer.log"

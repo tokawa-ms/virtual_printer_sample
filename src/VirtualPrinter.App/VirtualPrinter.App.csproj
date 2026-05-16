@@ -18,4 +18,13 @@
     <Resource Include="Assets\AppIcon.ico" Condition="Exists('Assets\AppIcon.ico')" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      PDFtoImage wraps PDFium and renders PDF pages directly to SkiaSharp
+      bitmaps with full color support. This replaces the XPS pipeline we
+      used with the Microsoft XPS Class Driver, which forced grayscale.
+    -->
+    <PackageReference Include="PDFtoImage" Version="5.1.0" />
+  </ItemGroup>
+
 </Project>

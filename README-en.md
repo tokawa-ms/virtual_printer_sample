@@ -4,15 +4,19 @@
 
 A sample **virtual printer for Windows 10 / 11** (x64 and **ARM64**, both native).
 Choose "Virtual Print Demo" from the standard Windows print dialog and the job
-will be saved as one **PNG image per page** under
-`C:\VirtualPrintDemo\<timestamp>_PrintJob\page_NNN.png`.
+will be saved as one **color PNG per page** under
+`C:\VirtualPrintDemo\<timestamp>_PrintJob\page_NNN.png` (the source PDF is
+preserved as `print.pdf` in the same folder).
 
 - Language: **C# / WPF / .NET 8**
-- Required driver: only the in-box **Microsoft XPS Class Driver**
+- Required driver: only the in-box **Microsoft Print To PDF**
+- PDF → PNG rasterizer: **PDFium** (via the `PDFtoImage` NuGet) for native color output
 - No MSIX packaging, no code-signing certificate
 - Verified on Windows 11 24H2 (x64) with .NET 8 Desktop Runtime
 
 > **License:** [MIT](LICENSE) © 2026 tokawa-ms
+
+> **Why not Microsoft XPS Class Driver?** The XPS Class Driver does **not** advertise the `PageOutputColor` print capability, so applications such as Chrome / Edge / PowerPoint pre-rasterize every job to grayscale **before spooling**. No amount of post-processing can recover the original color. Microsoft Print To PDF, by contrast, does advertise `PageOutputColor`, accepts color jobs, and emits a color PDF — which PDFium then turns into a color PNG.
 
 ---
 
@@ -38,9 +42,9 @@ will be saved as one **PNG image per page** under
 
 ```
  ┌─────────────────────┐                                                ┌────────────────────┐
- │ Any Windows app     │  ─print─▶  Microsoft XPS Class Driver  ─XPS─▶ │ Local file port    │
- │ (Notepad / Edge..)  │                                                │ C:\VirtualPrintDemo │
- └─────────────────────┘                                                │  \.spool\spool.xps │
+ │ Any Windows app     │  ─print─▶  Microsoft Print To PDF  ─PDF─▶ │ Local file port    │
+ │ (Notepad / Edge..)  │            (PageOutputColor = Color)           │ C:\VirtualPrintDemo │
+ └─────────────────────┘                                                │  \.spool\spool.pdf │
                                                                         └────────┬───────────┘
                                                                                  │
                                                                 FileSystemWatcher fires
@@ -48,21 +52,21 @@ will be saved as one **PNG image per page** under
                                                                                  ▼
                                       ┌──────────────────────────────────────────────────────────┐
                                       │ VirtualPrinter.App.exe --watch (resident, HKLM\Run)        │
-                                      │   1. Wait for a complete ZIP (PK\x03\x04 + EOCD)           │
-                                      │   2. Reassemble OPC piece-streamed parts                   │
-                                      │   3. Normalize OpenXPS namespaces to legacy XPS            │
-                                      │   4. Open with XpsDocument and render each page at 300 DPI │
+                                      │   1. Wait for a complete PDF ("%PDF-" header + "%%EOF")    │
+                                      │   2. Move into the per-job folder as print.pdf             │
+                                      │   3. Rasterize with PDFium (PDFtoImage) at 300 DPI, color  │
                                       └──────────────────────────────────────────────────────────┘
                                                                                  │
                                                                                  ▼
-                                       C:\VirtualPrintDemo\<timestamp>_PrintJob\page_NNN.png
+                                       C:\VirtualPrintDemo\<timestamp>_PrintJob\page_NNN.png (color)
 ```
 
 | Layer | Component | Responsibility |
 |---|---|---|
-| Print queue | `Microsoft XPS Class Driver` + local file port | Appears in the print dialog and spools XPS to a file |
-| Resident service | `VirtualPrinter.App.exe --watch` (WPF / .NET 8) | Watches the spool file, converts XPS to PNGs |
-| Output | `C:\VirtualPrintDemo\<timestamp>_PrintJob\page_NNN.png` | One 300 DPI PNG per page |
+| Print queue | `Microsoft Print To PDF` + local file port | Appears in the print dialog and spools a color PDF to a file |
+| Resident service | `VirtualPrinter.App.exe --watch` (WPF / .NET 8) | Watches the spool file, converts the PDF to color PNGs |
+| Rasterizer | PDFium via `PDFtoImage` 5.x NuGet | Renders each page into a 300 DPI color `SKBitmap` |
+| Output | `C:\VirtualPrintDemo\<timestamp>_PrintJob\page_NNN.png` | One 300 DPI **color** PNG per page (plus `print.pdf`) |
 
 The "resident service" is not a Windows service; it is a windowless process registered under `HKLM\…\Run` that starts when any user logs on. See [docs/architecture.md](docs/architecture.md) for details.
 
@@ -89,7 +93,7 @@ The installer reads `PROCESSOR_ARCHITECTURE` and automatically chooses between `
 | .NET 8 Desktop Runtime | Running pre-built binaries (matching CPU) | Same |
 | Windows PowerShell 5.1 or PowerShell 7+ | Install / uninstall scripts | Ships with Windows |
 
-The `Microsoft XPS Class Driver` ships with Windows; nothing else needs to be installed.
+The `Microsoft Print To PDF` driver ships with Windows 10 and later, so nothing else needs to be installed. The installer registers it with `Add-PrinterDriver` if necessary.
 
 ---
 
@@ -118,8 +122,8 @@ The installer:
 3. Copies the publish output to **`C:\Program Files\VirtualPrintDemo\`**
 4. Registers `HKLM\Software\Microsoft\Windows\CurrentVersion\Run\VirtualPrintDemoWatcher` so the watcher (`VirtualPrinter.App.exe --watch`) auto-starts at every user logon
 5. Starts the watcher immediately (no re-logon needed before testing)
-6. Creates the local file port `C:\VirtualPrintDemo\.spool\spool.xps`
-7. Creates the **Virtual Print Demo** printer using the `Microsoft XPS Class Driver`
+6. Creates the local file port `C:\VirtualPrintDemo\.spool\spool.pdf`
+7. Creates the **Virtual Print Demo** printer using the `Microsoft Print To PDF` driver and forces its default `PrintConfiguration` to color
 
 ### Install on ARM64 Windows
 
@@ -164,16 +168,13 @@ powershell -ExecutionPolicy Bypass -File scripts\Install-VirtualPrinter.ps1
 4. Optional: look at the log at
    - `C:\VirtualPrintDemo\virtual-printer.log`
 
-### Smoke tests (no real print required)
+### Smoke test (optional)
 
-Two scripts validate the watcher end-to-end without needing a print job:
+A script submits a 3-page color document through the real print queue and verifies that the watcher produces color PNGs:
 
 ```powershell
-# Drops a synthesized 3-page XPS into the spool dir and waits for the PNGs
+# Prints a 3-page color document to Virtual Print Demo and waits for page_001..003.png (color)
 powershell -ExecutionPolicy Bypass -File scripts\Test-Smoke.ps1
-
-# Same idea, but the package is converted to OpenXPS form first
-powershell -ExecutionPolicy Bypass -File scripts\Test-Smoke-OpenXps.ps1
 ```
 
 ---
@@ -215,9 +216,10 @@ powershell -ExecutionPolicy Bypass -File scripts\Install-VirtualPrinter.ps1
 
 | Symptom | What to do |
 |---|---|
-| Print succeeds but no PNGs appear | Check `C:\VirtualPrintDemo\virtual-printer.log`. Failed XPS payloads are kept under `C:\VirtualPrintDemo\.failed\` for inspection |
+| Print succeeds but no PNGs appear | Check `C:\VirtualPrintDemo\virtual-printer.log`. Failed PDF payloads are kept under `C:\VirtualPrintDemo\.failed\` for inspection |
 | Printer does not appear in the print dialog | Re-run `Install-VirtualPrinter.ps1` as Administrator. If `==> Target runtime: ...` still shows `win-x64` on an ARM64 machine, delete the stale publish output and re-run |
-| `never became a complete XPS package` in the log | No complete ZIP arrived within 30 s (e.g. only a prelude). The script auto-deletes the stub and waits for the next job, so usually re-printing recovers |
+| `never became a complete PDF` in the log | No complete PDF (header `%PDF-` + trailer `%%EOF`) arrived within 30 s. The watcher auto-deletes the partial file and waits for the next job, so re-printing usually recovers |
+| PNGs come out grayscale | A stale queue bound to the old XPS Class Driver may be lingering. Run `Uninstall-VirtualPrinter.ps1` → `Install-VirtualPrinter.ps1` to rebuild it, and confirm `Get-PrintConfiguration -PrinterName 'Virtual Print Demo'` reports `Color=True` |
 | `Another watcher instance is already running` | The watcher is already resident. The installer stops it automatically on re-install, so this message is benign |
 
 See [docs/troubleshooting.md](docs/troubleshooting.md) for the detailed diagnostic playbook.
@@ -233,15 +235,14 @@ virtual_printer_sample/
 │   ├── App.xaml(.cs)                       Startup and argument dispatch
 │   ├── MainWindow.xaml(.cs)                Minimal management UI
 │   ├── Logger.cs                           Append-only file logger
-│   ├── Workflow/SpoolWatcher.cs            FileSystemWatcher + completion detection
-│   ├── Rendering/XpsToPngRenderer.cs       XPS / OpenXPS / piece-streamed → PNG (300 DPI)
+│   ├── Workflow/SpoolWatcher.cs            FileSystemWatcher + PDF completion detection
+│   ├── Rendering/PdfToPngRenderer.cs       PDF → color PNG (300 DPI, PDFium)
 │   └── Assets/                             Placeholder icons
 ├── scripts/
 │   ├── Install-VirtualPrinter.ps1          Administrator installer
 │   ├── Uninstall-VirtualPrinter.ps1        Administrator uninstaller
 │   ├── Generate-Assets.ps1                 Placeholder icon generator
-│   ├── Test-Smoke.ps1                      Watcher smoke test (XPS)
-│   └── Test-Smoke-OpenXps.ps1              Watcher smoke test (OpenXPS)
+│   └── Test-Smoke.ps1                      End-to-end smoke test (real print queue → color PNGs)
 ├── docs/                                  In-depth documentation (see below)
 ├── LICENSE                                MIT
 ├── README.md                              Japanese README
@@ -255,8 +256,9 @@ virtual_printer_sample/
 | Document | Contents |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Detailed architecture, per-component responsibilities, run modes |
-| [docs/xps-internals.md](docs/xps-internals.md) | XPS / OpenXPS / OPC piece-streaming internals and how this project handles them |
-| [docs/design-history.md](docs/design-history.md) | Approaches considered (MSIX + Print Workflow, Print Support App, …) and why each was adopted or rejected |
+| [docs/pdf-pipeline.md](docs/pdf-pipeline.md) | **Current**: deep dive into the Microsoft Print To PDF + PDFium color-PNG pipeline |
+| [docs/design-history.md](docs/design-history.md) | All previously-considered approaches and why each was adopted or rejected, including the XPS-Class-Driver → Print-To-PDF migration for color support |
+| [docs/xps-internals.md](docs/xps-internals.md) | **Historical archive**: OpenXPS / OPC piece-streaming handling that was required by the legacy XPS pipeline (v1.x line) |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Detailed troubleshooting and diagnostics |
 
 ---
