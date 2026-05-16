@@ -1,0 +1,19 @@
+# Build artifacts
+bin/
+obj/
+
+# Legacy MSIX approach (kept locally for clean-up of older installs; not for publication)
+legacy-msix/
+
+# Self-signed certificates (do not commit private keys)
+*.pfx
+*.snk
+
+# Local debugging artifacts produced under the output root
+# (the watcher writes here at runtime; nothing here is source)
+# C:\VirtualPrintDemo is outside the repo so usually nothing matches.
+
+# IDE
+.vs/
+*.user
+*.suo
