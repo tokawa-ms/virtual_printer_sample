@@ -25,7 +25,7 @@ public partial class App : Application
 
         var args = e.Args;
 
-        // --render <xps-path>  : one-shot render of an existing XPS file
+        // --render <pdf-path>  : one-shot render of an existing PDF file
         if (args.Length >= 2 && string.Equals(args[0], "--render", StringComparison.OrdinalIgnoreCase))
         {
             RunOneShotRender(args[1]);
@@ -46,13 +46,12 @@ public partial class App : Application
         window.Show();
     }
 
-    private void RunOneShotRender(string xpsPath)
+    private void RunOneShotRender(string pdfPath)
     {
         try
         {
-            Logger.Info($"One-shot render of '{xpsPath}'.");
-            using var fs = System.IO.File.OpenRead(xpsPath);
-            Rendering.XpsToPngRenderer.RenderAsync(fs, "PrintJob")
+            Logger.Info($"One-shot render of '{pdfPath}'.");
+            Rendering.PdfToPngRenderer.RenderAsync(pdfPath, "PrintJob")
                                       .GetAwaiter().GetResult();
             Logger.Info("One-shot render complete.");
         }

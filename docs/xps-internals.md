@@ -1,5 +1,15 @@
 # XPS / OpenXPS / OPC Piece Streaming 内部仕様
 
+> ⚠️ **歴史的アーカイブ (Historical Archive)**
+> このドキュメントは **レガシー XPS Class Driver パイプライン (v1.x 以前)** にのみ適用されます。
+> 現行 (v2.x 以降) の Virtual Print Demo は **Microsoft Print To PDF + PDFium** によるカラー対応パイプラインに切り替わっており、本ドキュメント内の OPC / piece streaming / OpenXPS 正規化に関する記述は現行コードには存在しません。
+> 現行パイプラインについては [pdf-pipeline.md](pdf-pipeline.md) を参照してください。
+> 切替の経緯は [design-history.md](design-history.md) の「§7 カラー対応のための PDF 移行」を参照してください。
+>
+> 以下の内容は、将来 XPS Class Driver ベースの実装を再評価する際のリファレンスとして残しています。
+
+---
+
 > Virtual Print Demo は Microsoft XPS Class Driver の出力を解釈する都合上、
 > XPS の OPC 物理構造を深く触ります。このドキュメントはその仕様面の覚書です。
 

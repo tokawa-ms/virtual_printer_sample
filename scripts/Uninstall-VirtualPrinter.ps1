@@ -24,7 +24,8 @@ function Assert-Admin {
 }
 Assert-Admin
 
-$spoolFile = Join-Path $OutputRoot '.spool\spool.xps'
+$spoolFile = Join-Path $OutputRoot '.spool\spool.pdf'
+$legacyXpsSpool = Join-Path $OutputRoot '.spool\spool.xps'
 
 Write-Host "==> Stopping watcher"
 Get-Process -Name 'VirtualPrinter.App' -ErrorAction SilentlyContinue |
@@ -39,8 +40,8 @@ if ($printer) {
         Remove-PrinterPort -Name $portName -ErrorAction SilentlyContinue
     }
 }
-# Stale ports left by earlier prototypes
-foreach ($p in 'VirtualPrintDemoPort', $spoolFile) {
+# Stale ports left by earlier prototypes (including the old XPS port).
+foreach ($p in 'VirtualPrintDemoPort', $spoolFile, $legacyXpsSpool) {
     Remove-PrinterPort -Name $p -ErrorAction SilentlyContinue
 }
 
